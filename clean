@@ -1,0 +1,9 @@
+#! /bin/bash
+
+# Remove stored ACME certificate state
+for f in acme/stg.json acme/prd.json; do
+  if [ -f "$(dirname "$0")/$f" ]; then
+    rm "$(dirname "$0")/$f"
+    echo "Removed Traefik certificates from: $f"
+  fi
+done

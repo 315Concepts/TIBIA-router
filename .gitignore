@@ -1,0 +1,8 @@
+# Machine-local SERVICE_DOMAIN and ACME_CERTIFICATE_EMAIL values
+.env.local
+
+# ACME Certificates
+acme
+
+# UFW rule backups written by scripts/configure-ufw.sh
+ufw-backup-*.tar.gz

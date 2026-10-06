@@ -1,0 +1,49 @@
+services:
+  # Subdomain-based routing debug container for bringup
+  whoami-subdomain:
+    image: traefik/whoami
+    environment:
+      - WHOAMI_PORT_NUMBER=8080
+    labels:
+      # Routing enabled via Traefik
+      - "traefik.enable=true"
+      # Subdomain routed under SERVICE_DOMAIN
+      - "traefik.http.routers.whoami-subdomain.rule=Host(`${WHOAMI_SUBDOMAIN}.${SERVICE_DOMAIN}`)"
+      # Service LB for port forwarding
+      - "traefik.http.services.whoami-subdomain-svclb.loadbalancer.server.port=8080"
+      - "traefik.http.routers.whoami-subdomain.service=whoami-subdomain-svclb"
+      # Private HTTPS Ingress
+      - "traefik.http.routers.whoami-subdomain.entrypoints=web-secure"
+      - "traefik.http.routers.whoami-subdomain.tls=true"
+      # Automated ACME Cert
+      - "traefik.http.routers.whoami-subdomain.tls.certresolver=${ACME_DEFAULT_RESOLVER}"
+    networks:
+      - traefik_backend
+  # Path-based routing debug container for bringup
+  whoami-uripath:
+    image: traefik/whoami
+    environment:
+      - WHOAMI_PORT_NUMBER=8181
+    labels:
+      # Routing enabled via Traefik
+      - "traefik.enable=true"
+      # Path routed on top of SERVICE_DOMAIN
+      - "traefik.http.routers.whoami-path.rule= Host(`${SERVICE_DOMAIN}`) && PathPrefix(`${WHOAMI_PUBLIC_PATH}`)"
+      # Service LB for port forwarding
+      - "traefik.http.services.whoami-path-svclb.loadbalancer.server.port=8181"
+      - "traefik.http.routers.whoami-path.service=whoami-path-svclb"
+      # Public HTTPS Ingress
+      - "traefik.http.routers.whoami-path.entrypoints=web-secure"
+      - "traefik.http.routers.whoami-path.tls=true"
+      # Automated ACME Cert
+      - "traefik.http.routers.whoami-path.tls.certresolver=${ACME_DEFAULT_RESOLVER}"
+      # Middleware
+      - "traefik.http.routers.whoami-path.middlewares=prefix-strip" # label-based prefix-stripping enabled for this container's routing
+      # - "traefik.http.routers.whoami-path.middlewares=prefix-strip@file" # file-based prefix-stripping enabled for this container's routing
+    networks:
+      - traefik_backend
+
+networks:
+  traefik_backend:
+    name: traefik_backend
+    external: true

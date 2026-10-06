@@ -1,0 +1,8 @@
+# dynamic.yml — shipped with TIBIA
+http:
+  middlewares:
+    # Global prefix-stripping middleware - each path must be included here
+    prefix-strip:
+      stripPrefix:
+        prefixes:
+          - "{{ env \"WHOAMI_PUBLIC_PATH\" }}"

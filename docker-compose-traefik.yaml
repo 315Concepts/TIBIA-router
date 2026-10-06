@@ -1,0 +1,68 @@
+services:
+  tibia-router:
+    image: traefik:v${TRAEFIK_VERSION}
+    restart: always
+    env_file:
+      - path: .env
+        required: true
+    command:
+      # Logging
+      - "--log.level=INFO"
+      - "--accesslog.format=json"
+      # Dashboard settings
+      - "--api.dashboard=true"
+      # - "--api.insecure=true" # For testing ONLY - **DO NOT** enable in production
+      # Enable Docker provider - but only route to explicitly labeled containers
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Enable dynamic config file provider (see README for guidance)
+      # - "--providers.file.filename=/etc/traefik/config/dynamic.yml"
+      # Entrypoints
+      - "--entrypoints.web-insecure.address=:80"                        # HTTP: redirects public HTTP -> HTTPS on entrypoint
+      - "--entrypoints.web-secure.address=:443"                         # HTTPS: terminates public TLS (ACME/LE) for containers
+      - "--entrypoints.private-secure.address=:${PRIVATE_HTTPS_PORT}"   # HTTPS: terminates private TLS (ACME/LE) for containers
+      # Permanent HTTP -> HTTPS redirection for public routes
+      - "--entrypoints.web-insecure.http.redirections.entrypoint.to=web-secure"
+      - "--entrypoints.web-insecure.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web-insecure.http.redirections.entrypoint.permanent=true"
+      # ACME STG configuration
+      - "--certificatesresolvers.stg.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.stg.acme.email=${ACME_CERTIFICATE_EMAIL}"
+      - "--certificatesresolvers.stg.acme.storage=/etc/traefik/acme/stg.json"
+      - "--certificatesresolvers.stg.acme.tlschallenge=true"
+      # ACME PRD configuration
+      - "--certificatesresolvers.prd.acme.caserver=https://acme-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.prd.acme.email=${ACME_CERTIFICATE_EMAIL}"
+      - "--certificatesresolvers.prd.acme.storage=/etc/traefik/acme/prd.json"
+      - "--certificatesresolvers.prd.acme.tlschallenge=true"
+    labels:
+      # Routing enabled via Traefik
+      - "traefik.enable=true"
+      # Outer Traefik dashboard (private-secure: outer terminates TLS)
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_SUBDOMAIN}.${SERVICE_DOMAIN}`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=private-secure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=${ACME_DEFAULT_RESOLVER}"
+      #####
+      # DYNAMIC CONFIGURATION LABELS - remove when using file-based dynamic configuration
+      #####
+      # Global prefix-stripping middleware - each path must be included here manually (${PATH_1},${PATH_2},...)
+      - "traefik.http.middlewares.prefix-strip.stripprefix.prefixes=${WHOAMI_PUBLIC_PATH}"
+    # MACHINE/HOST PORTS OPEN TO THE WORLD
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${PRIVATE_HTTPS_PORT}:${PRIVATE_HTTPS_PORT}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./acme:/etc/traefik/acme
+      # Enable dynamic configuration from a container-mounted file (see README for guidance)
+      # - ./config:/etc/traefik/config
+    networks:
+      - traefik_backend
+
+networks:
+  traefik_backend:
+    name: traefik_backend
+    external: true
