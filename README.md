@@ -21,21 +21,21 @@ One job: put the latest version of _Traefik_ in front of your containers, with L
 
 ## Quick Start
 
-1. Init the local environment by running `./init` and then editing `.env.local` with `SERVICE_DOMAIN` and `ACME_CERTIFICATE_EMAIL` values
+1. Init the local environment by running `./gateway init` and then editing `.env.local` with `SERVICE_DOMAIN` and `ACME_CERTIFICATE_EMAIL` values
 2. Optional, fresh host:
     - Install _curl_, _openssl_, and _Docker_ with `./scripts/install-debian.sh` or `./scripts/install-ubuntu.sh`
     - Review then run `./scripts/configure-ufw.sh`
     - Add swap equal to your RAM with `./scripts/configure-swap.sh`
 3. Create the shared network: `./scripts/create-network.sh`
-4. Start _Traefik_ in **BRINGUP MODE**: `./up` which will bring _Traefik_ up with **ACME** Staging certificates and canary deployments active
-5. Confirm routing works: `./verify` - see [Verifying your setup](#verifying-your-setup)
-6. Stop _Traefik_: `./down && ./clean` which will bring all containers down and delete **_ALL_** **ACME** certificate caches 
-7. Start _Traefik_ in **PRODUCTION MODE**: `./up production` which will bring _Traefik_ up by itself with live **ACME** Production certificates
-8. Run `./verify production` to validate the full production stack and you're ready to attach your own domain services!
+4. Start _Traefik_ in **BRINGUP MODE**: `./gateway up` which will bring _Traefik_ up with **ACME** Staging certificates and canary deployments active
+5. Confirm routing works: `./gateway verify` - see [Verifying your setup](#verifying-your-setup)
+6. Stop _Traefik_: `./gateway down && ./gateway clean` which will bring all containers down and delete **_ALL_** **ACME** certificate caches 
+7. Start _Traefik_ in **PRODUCTION MODE**: `./gateway up production` which will bring _Traefik_ up by itself with live **ACME** Production certificates
+8. Run `./gateway verify production` to validate the full production stack and you're ready to attach your own domain services!
 
 ## Static Configuration
 
-All domain-specific static configuration for _Traefik_ is through environment variables. `.env` holds the defaults and `.env.local` holds your machine-specific values; `.env.local` is git-ignored and wins over `.env`. Running the `./init` script creates `.env.local` from `.env.base`, if it doesn't exist yet. The helper scripts provided will load both files for you, the alternative is to `source` the environment files manually and then running additional _Docker Compose_ commands.
+All domain-specific static configuration for _Traefik_ is through environment variables. `.env` holds the defaults and `.env.local` holds your machine-specific values; `.env.local` is git-ignored and wins over `.env`. Running the `./gateway init` script creates `.env.local` from `.env.base`, if it doesn't exist yet. The helper scripts provided will load both files for you, the alternative is to `source` the environment files manually and then running additional _Docker Compose_ commands.
 
 | Variable                 | Default                | Description |
 | ------------------------ | ---------------------- | ----------- |
@@ -57,12 +57,12 @@ _Traefik_ can load its own dynamic configuration from two places - TIBIA ships w
 
 | Approach                          | Where the config lives                              | Changing it |
 | ------------------------------    | --------------------------------------------------- | ----------- |
-| **_Docker_ labels** (default)       | Labels on the _Traefik_ container itself              | Recreate the container (`./down && ./up [production]`)|
+| **_Docker_ labels** (default)       | Labels on the _Traefik_ container itself              | Recreate the container (`./gateway down && ./gateway up [production]`)|
 | **File provider** (`dynamic.yml`) | One file, mounted into the _Traefik_ container        | Edit the file; _Traefik_ reloads it |
 
 - **Switching:** Comment out the dynamic configuration labels in `docker-compose-traefik.yaml` and uncomment the `providers.file.filename` and `/etc/traefik/config` directory mounting lines, plus whatever [workload](#workload-configuration) changes are needed for their middlewares.
 - **Labels are the more compact option for an Operator.** There is one central _Traefik_ configuration in `docker-compose-traefik.yaml` instead of carrying around an additional file and mount on the container.
-- **The catch:** _Docker_ labels can't be modified after a container is created. Any change in what is nominally a dynamic configuration actually means dropping and recreating the container (`./down && ./up [production]`). Since we're talking about the _Traefik_ container itself, that change **_briefly takes your domain ingress offline_** - this shouldn't be a frequent occurrence but with certain traffic levels or shapes that may be an unacceptable operations pattern.
+- **The catch:** _Docker_ labels can't be modified after a container is created. Any change in what is nominally a dynamic configuration actually means dropping and recreating the container (`./gateway down && ./gateway up [production]`). Since we're talking about the _Traefik_ container itself, that change **_briefly takes your domain ingress offline_** - this shouldn't be a frequent occurrence but with certain traffic levels or shapes that may be an unacceptable operations pattern.
 - **The file provider avoids that.** _Traefik_ watches the configuration and applies edits without a restart, and the definitions live in an external file mounted to the container. We mount the file's directory instead of the single file because some editors replace a file rather than modify it, and a single-file bind mount can keep pointing at the old copy.
 
 Neither one is wrong. Labels suit compact stacks that change rarely or are always redeployed together, and the file method suits stacks where routing configurations change more often or that have an ingress where even momentary service interruption is unacceptable.
@@ -113,18 +113,18 @@ TIBIA runs two **Let's Encrypt** resolvers side-by-side, and which one a service
 | `prd`    | Real, publicly trusted certificates | `acme/prd.json` | Production, once routing is proven on `stg`. |
 
 - **Challenge type:** TLS-ALPN, so public port 443 must reach _Traefik_ from the WAN/internet. Both resolvers need it.
-- **Storage:** certificate cache lives in `./acme/` on the host and is mounted into the container at `/etc/traefik/acme`. `./up` creates any missing state file as an empty `{}` with mode `600`. _Traefik_ can silently choke and refuse to use **ACME** storage with incorrect permissions.
+- **Storage:** certificate cache lives in `./acme/` on the host and is mounted into the container at `/etc/traefik/acme`. `./gateway up` creates any missing state file as an empty `{}` with mode `600`. _Traefik_ can silently choke and refuse to use **ACME** storage with incorrect permissions.
 - **Never commit these files.** They hold your account key and certificate private keys. `acme/` is already in `.gitignore`.
-- **Resetting:** `./clean` deletes both state files; the next `./up` recreates them empty. Stop _Traefik_ first (`./down`) so it doesn't rewrite them.
-- **Switching from `stg` to `prd`:** Always run `./down && ./clean`, then `./up production`. **Let's Encrypt** rate-limits duplicate certificates, so performing challenges repeatedly for **_any reason_** when performing domain bringup can lock that **_entire domain_** out of the production issuer - this is compounded by the fact that _Traefik_ can aggressively retry certificate challenges when it thinks they fail, even if **Let's Encrypt** has actually issued the certificate. This challenge/issuance conflict can happen for many reasons, so regardless of the specific method we always recommend bringing a domain online with **ACME** Staging resolvers first. Additionally, if _Traefik_ has cached certificates from another resolvers it may not request new certificates at all when the configuration is updated. The provided scripts manage all of this for the Operator, but manually editing the JSON files is also possible for more granular needs.
+- **Resetting:** `./gateway clean` deletes both state files; the next `./gateway up` recreates them empty. Stop _Traefik_ first (`./gateway down`) so it doesn't rewrite them.
+- **Switching from `stg` to `prd`:** Always run `./gateway down && ./gateway clean`, then `./gateway up production`. **Let's Encrypt** rate-limits duplicate certificates, so performing challenges repeatedly for **_any reason_** when performing domain bringup can lock that **_entire domain_** out of the production issuer - this is compounded by the fact that _Traefik_ can aggressively retry certificate challenges when it thinks they fail, even if **Let's Encrypt** has actually issued the certificate. This challenge/issuance conflict can happen for many reasons, so regardless of the specific method we always recommend bringing a domain online with **ACME** Staging resolvers first. Additionally, if _Traefik_ has cached certificates from another resolvers it may not request new certificates at all when the configuration is updated. The provided scripts manage all of this for the Operator, but manually editing the JSON files is also possible for more granular needs.
 
 ## Verifying your setup
 
-Running `./up` starts two [`whoami`](https://github.com/traefik/whoami) canaries next to _Traefik_ - tiny containers that echo back the request they received. The `./verify` script uses them to prove DNS, certificates and routing work before you trust the production resolver or attach a real service.
+Running `./gateway up` starts two [`whoami`](https://github.com/traefik/whoami) canaries next to _Traefik_ - tiny containers that echo back the request they received. The `./gateway verify` script uses them to prove DNS, certificates and routing work before you trust the production resolver or attach a real service.
 
 ```sh
-./verify               # bringup mode: staging certs, canaries running
-./verify production    # after ./up production: live certs, no canaries
+./gateway verify               # bringup mode: staging certs, canaries running
+./gateway verify production    # after ./gateway up production: live certs, no canaries
 ```
 
 Run it on the _Traefik_ host. It prints `PASS`/`FAIL` for each check and exits non-zero if any fail:
@@ -142,9 +142,9 @@ If the check is made from the host itself then the dashboard passing doesn't pro
 | ------- | ------------ |
 | Certificate never issues          | Port 443 isn't reachable from the internet, or DNS doesn't point at this host yet. Fix DNS **before** retrying; repeated failures on `prd` hit **Let's Encrypt** rate limits. _Traefik_'s logs should show the **ACME** errors.  |
 | `404 page not found`              | No router matched. Check the `Host` rule, that the container has `traefik.enable=true`, and that it is on `traefik_backend`. The dashboard lists what _Traefik_ actually loaded. _Traefik_'s logs may help diagnose missing routers.  |
-| Staging certificate on `prd`      | _Traefik_ reused a cached certificate. Run `./down && ./clean`, then `./up production`, or manually remove the certificate from `acme/stg.json`  |
+| Staging certificate on `prd`      | _Traefik_ reused a cached certificate. Run `./gateway down && ./gateway clean`, then `./gateway up production`, or manually remove the certificate from `acme/stg.json`  |
 | Redirect loop                     | A CDN or load balancer in front of _Traefik_ is terminating TLS and forwarding plain HTTP. Pass HTTPS through, or configure _Traefik_'s forwarded-headers trust for it.  |
-| Error about the **ACME** file         | The certificate cache's `acme/*.json` files must be mode `600`. `./down && ./clean` then `./up [production]` recreates them correctly. Sometimes certificate cache issues are logged by _Traefik_, but many fail silently.  |
+| Error about the **ACME** file         | The certificate cache's `acme/*.json` files must be mode `600`. `./gateway down && ./gateway clean` then `./gateway up [production]` recreates them correctly. Sometimes certificate cache issues are logged by _Traefik_, but many fail silently.  |
 
 To read _Traefik_'s logs from the host, run: `docker compose -f ./docker-compose-traefik.yaml logs -f`
 
@@ -154,11 +154,11 @@ Run these from the repository root. The Compose files are `docker-compose-traefi
 
 | Script                         | What it does |
 | ------------------------------ | ------------ |
-| `./init`                       | Creates `.env.local` from `.env.base` if it doesn't exist, and creates the `acme/` directory. |
-| `./up [production]`            | Loads the environment, creates any missing **ACME** state files, then starts the canaries and _Traefik_ (detached). With `prd`, `prod` or `production` it selects the `prd` resolver and skips the canaries. |
-| `./down`                       | Stops the canaries, then _Traefik_. |
-| `./clean`                      | Deletes `acme/stg.json` and `acme/prd.json` if present. Run `./down` first. |
-| `./verify [production]`        | Runs the routing, certificate and dashboard checks described in [Verifying your setup](#verifying-your-setup). |
+| `./gateway init`                       | Creates `.env.local` from `.env.base` if it doesn't exist, and creates the `acme/` directory. |
+| `./gateway up [production]`            | Loads the environment, creates any missing **ACME** state files, then starts the canaries and _Traefik_ (detached). With `prd`, `prod` or `production` it selects the `prd` resolver and skips the canaries. |
+| `./gateway down`                       | Stops the canaries, then _Traefik_. |
+| `./gateway clean`                      | Deletes `acme/stg.json` and `acme/prd.json` if present. Run `./gateway down` first. |
+| `./gateway verify [production]`        | Runs the routing, certificate and dashboard checks described in [Verifying your setup](#verifying-your-setup). |
 | `scripts/create-network.sh`    | Creates the shared `traefik_backend` _Docker_ network. Run once per host. |
 | `scripts/install-debian.sh`, `scripts/install-ubuntu.sh` | Installs _Docker Engine_ and the _Compose_ plugin from _Docker_'s apt repository. |
 | `scripts/configure-ufw.sh`     | Locks down ports that aren't in use by _Traefik_ - the rules are strict, review them before enabling. See [Firewall](#firewall).|
@@ -172,7 +172,7 @@ TIBIA keeps _Traefik_'s defaults except where noted. Here is what is and isn't p
 - **Only labelled containers are routed** (`exposedbydefault=false`). That limits what gets published, **_not what Traefik can see_**.
 - **Dashboard.** Served only on the private port, with `--api.insecure` left off (keep it that way outside short-lived testing). It has no authentication by default; restrict the port at your firewall and consider an auth middleware. See [Entrypoints](#entrypoints) and [Firewall](#firewall).
 - **Shared network.** Every container on `traefik_backend` can reach every other one. Give sensitive services their own network as well.
-- **Canaries.** `whoami` echoes request headers. Use it for bring-up only; `./up production` skips it.
+- **Canaries.** `whoami` echoes request headers. Use it for bring-up only; `./gateway up production` skips it.
 - **Secrets.** `.env` and `.env.local` hold a domain, an email and port numbers - nothing secret. The sensitive material is `acme/` (account and certificate private keys); keep it out of git and back it up like any other key store.
-- **Updates.** `TRAEFIK_VERSION` tracks a minor line (`3.7`), so `docker compose -f ./docker-compose-traefik.yaml pull` then `./down && ./up` picks up patch releases. Read the release notes before changing minor versions.
+- **Updates.** `TRAEFIK_VERSION` tracks a minor line (`3.7`), so `docker compose -f ./docker-compose-traefik.yaml pull` then `./gateway down && ./gateway up` picks up patch releases. Read the release notes before changing minor versions.
 - **_Docker_ and `ufw`.** _Docker_ publishes ports through its own firewall rules, **_which can bypass `ufw`_**. Verify from an outside machine with `nmap` rather than trusting `ufw status` if you need to restrict published ports from breaching the firewall. Do not rely on a single approach to network security - understanding your full networking model and layering security in depth is strongly recommended.

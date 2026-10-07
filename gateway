@@ -1,0 +1,198 @@
+#! /bin/bash
+
+# Usage: ./gateway <command> [production]
+#
+# Commands:
+#   init                 Create .env.local from .env.base (if missing) and the acme/ directory
+#   up [production]      Start the canaries (bringup only) and Traefik
+#   down                 Stop the canaries and Traefik
+#   clean                Remove stored ACME certificate state
+#   verify [production]  Check that DNS, certificates and routing work (exits non-zero on failure)
+
+cd "$(dirname "$0")" || exit 1
+
+# Auto-load the environment, including .env.local
+load_env() {
+  set -a
+  [ -f .env.local ] && source .env.local
+  source .env
+  set +a
+}
+
+# Add file stores for any missing ACME certificate caches
+ensure_acme_stores() {
+  mkdir -p acme 2>&1
+  for f in acme/stg.json acme/prd.json; do
+    if [ ! -f "$f" ]; then
+      echo '{}' > "$f"
+      chmod 600 "$f"   # Traefik refuses ACME storage that is group/world accessible
+      echo "Added Traefik certificate cache: $f"
+    fi
+  done
+}
+
+cmd_init() {
+  # Try to ensure an .env.local exists with the appropriate shape
+  [ -f .env.local ] || { cp .env.base .env.local && echo "Created .env.local - edit it with your own values, now."; }
+
+  mkdir -p acme 2>&1
+}
+
+cmd_up() {
+  load_env
+  ensure_acme_stores
+
+  # Production mode if the first argument says so
+  PRODUCTION=false
+  case "${1,,}" in
+    prd|prod|production)
+      echo "Production mode active!"
+      PRODUCTION=true
+      echo "Requesting LIVE CERTIFICATES from the ACME/prd resolver!"
+      ACME_DEFAULT_RESOLVER=prd
+      ;;
+  esac
+
+  # Debug containers (whoami) are skipped in production
+  if [ "$PRODUCTION" = false ]; then
+    docker compose -f ./docker-compose-debug.yaml up -d
+  fi
+
+  # Pull up the network core
+  docker compose -f ./docker-compose-traefik.yaml up -d
+}
+
+cmd_down() {
+  load_env
+
+  # Bring down any deployed canaries
+  docker compose -f ./docker-compose-debug.yaml down
+
+  # Bring down the network core
+  docker compose -f ./docker-compose-traefik.yaml down
+}
+
+cmd_clean() {
+  # Remove stored ACME certificate state
+  for f in acme/stg.json acme/prd.json; do
+    if [ -f "$f" ]; then
+      rm "$f"
+      echo "Removed Traefik certificates from: $f"
+    fi
+  done
+}
+
+cmd_verify() {
+  load_env
+
+  # Production mode if the first argument says so
+  PRODUCTION=false
+  case "${1,,}" in
+    prd|prod|production) PRODUCTION=true ;;
+  esac
+
+  # Staging certificates are untrusted, so curl needs -k to talk to them
+  CURL_OPTS=(-s --max-time 10)
+  [ "$PRODUCTION" = false ] && CURL_OPTS+=(-k)
+
+  SUBDOMAIN_HOST="${WHOAMI_SUBDOMAIN}.${SERVICE_DOMAIN}"
+  DASHBOARD_HOST="${TRAEFIK_SUBDOMAIN}.${SERVICE_DOMAIN}"
+  WHOAMI_PATH="/${WHOAMI_PUBLIC_PATH#/}"
+
+  FAILED=0
+  pass() { echo "PASS  $1"; }
+  fail() { echo "FAIL  $1"; [ -n "$2" ] && echo "      $2"; FAILED=$((FAILED + 1)); }
+  skip() { echo "SKIP  $1"; }
+
+  echo "Verifying ${SERVICE_DOMAIN} ($([ "$PRODUCTION" = true ] && echo production || echo bringup) mode)"
+  echo
+
+  # 1. Containers are running
+  if [ -n "$(docker compose -f ./docker-compose-traefik.yaml ps --status running -q 2>/dev/null)" ]; then
+    pass "Traefik container is running"
+  else
+    fail "Traefik container is running" "Start it with ./gateway up"
+  fi
+
+  if [ "$PRODUCTION" = false ]; then
+    if [ "$(docker compose -f ./docker-compose-debug.yaml ps --status running -q 2>/dev/null | wc -l)" -ge 2 ]; then
+      pass "Both whoami canaries are running"
+    else
+      fail "Both whoami canaries are running" "Start them with ./gateway up (without 'production')"
+    fi
+  fi
+
+  # 2. HTTP redirects to HTTPS
+  CODE=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "http://${SERVICE_DOMAIN}")
+  case "$CODE" in
+    301\ https://*) pass "http://${SERVICE_DOMAIN} redirects to HTTPS (301)" ;;
+    *) fail "http://${SERVICE_DOMAIN} redirects to HTTPS (301)" "Got: ${CODE:-no response}" ;;
+  esac
+
+  # 3 + 4. Canary routes (bringup only)
+  if [ "$PRODUCTION" = false ]; then
+    BODY=$(curl "${CURL_OPTS[@]}" "https://${SUBDOMAIN_HOST}")
+    if echo "$BODY" | grep -qi "^Host: ${SUBDOMAIN_HOST}"; then
+      pass "Subdomain route: https://${SUBDOMAIN_HOST}"
+    else
+      fail "Subdomain route: https://${SUBDOMAIN_HOST}" "Expected whoami output with 'Host: ${SUBDOMAIN_HOST}'"
+    fi
+
+    [[ "$WHOAMI_PUBLIC_PATH" != /* ]] && echo "NOTE  WHOAMI_PUBLIC_PATH has no leading slash; the router rule needs one"
+    BODY=$(curl "${CURL_OPTS[@]}" "https://${SERVICE_DOMAIN}${WHOAMI_PATH}")
+    if echo "$BODY" | grep -q "^GET / HTTP"; then
+      pass "Path route: https://${SERVICE_DOMAIN}${WHOAMI_PATH} (prefix stripped)"
+    else
+      fail "Path route: https://${SERVICE_DOMAIN}${WHOAMI_PATH} (prefix stripped)" "Expected whoami output with request line 'GET / HTTP/1.1'"
+    fi
+  else
+    skip "Canary routes (not started in production - check a service of your own)"
+  fi
+
+  # 5. Certificate issuer matches the mode
+  # Checked on the dashboard host, since it is the one router that exists in every mode.
+  # (In production nothing is routed on the apex domain, so Traefik would serve its default certificate there.)
+  if command -v openssl >/dev/null; then
+    ISSUER=$(echo | openssl s_client -connect "${DASHBOARD_HOST}:${PRIVATE_HTTPS_PORT}" -servername "${DASHBOARD_HOST}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+    if [ -z "$ISSUER" ]; then
+      fail "Certificate issuer" "Could not read a certificate from ${DASHBOARD_HOST}:${PRIVATE_HTTPS_PORT}"
+    elif echo "$ISSUER" | grep -qi "TRAEFIK DEFAULT CERT"; then
+      fail "Certificate issuer" "Traefik is serving its self-signed default certificate - issuance has not completed. Check the logs: docker compose -f ./docker-compose-traefik.yaml logs"
+    elif [ "$PRODUCTION" = true ] && ! echo "$ISSUER" | grep -qi "staging"; then
+      pass "Certificate is from the production issuer (${ISSUER#issuer=})"
+    elif [ "$PRODUCTION" = false ] && echo "$ISSUER" | grep -qi "staging"; then
+      pass "Certificate is from the staging issuer, as expected"
+    else
+      fail "Certificate issuer" "Got: ${ISSUER} - if this is wrong, try ./gateway down && ./gateway clean and start again"
+    fi
+  else
+    skip "Certificate issuer (openssl not installed)"
+  fi
+
+  # 6. Dashboard answers on the private port
+  CODE=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code}' "https://${DASHBOARD_HOST}:${PRIVATE_HTTPS_PORT}/dashboard/")
+  if [ "$CODE" = "200" ]; then
+    pass "Dashboard: https://${DASHBOARD_HOST}:${PRIVATE_HTTPS_PORT}/dashboard/"
+  else
+    fail "Dashboard: https://${DASHBOARD_HOST}:${PRIVATE_HTTPS_PORT}/dashboard/" "Got HTTP ${CODE}"
+  fi
+
+  echo
+  if [ "$FAILED" -eq 0 ]; then
+    echo "All checks passed."
+  else
+    echo "${FAILED} check(s) failed."
+    exit 1
+  fi
+}
+
+usage() {
+  echo "Usage: $0 {init|up|down|clean|verify} [production]" >&2
+}
+
+COMMAND="$1"
+[ $# -gt 0 ] && shift
+case "$COMMAND" in
+  init|up|down|clean|verify) "cmd_$COMMAND" "$@" ;;
+  *) usage; exit 1 ;;
+esac

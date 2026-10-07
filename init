@@ -1,6 +1,0 @@
-#! /bin/bash
-
-# Try to ensure an .env.local exists with the appropriate shape
-[ -f "$(dirname "$0")/.env.local" ] || { cp $(dirname "$0")/.env.base $(dirname "$0")/.env.local && echo "Created .env.local - edit it with your own values, now."; }
-
-mkdir -p $(dirname "$0")/acme 2>&1
