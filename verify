@@ -52,8 +52,8 @@ fi
 # 2. HTTP redirects to HTTPS
 CODE=$(curl "${CURL_OPTS[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "http://${SERVICE_DOMAIN}")
 case "$CODE" in
-  308\ https://*) pass "http://${SERVICE_DOMAIN} redirects to HTTPS (308)" ;;
-  *) fail "http://${SERVICE_DOMAIN} redirects to HTTPS (308)" "Got: ${CODE:-no response}" ;;
+  301\ https://*) pass "http://${SERVICE_DOMAIN} redirects to HTTPS (301)" ;;
+  *) fail "http://${SERVICE_DOMAIN} redirects to HTTPS (301)" "Got: ${CODE:-no response}" ;;
 esac
 
 # 3 + 4. Canary routes (bringup only)

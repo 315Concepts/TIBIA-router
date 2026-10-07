@@ -38,7 +38,7 @@ services:
     labels:
       # Routing enabled via Traefik
       - "traefik.enable=true"
-      # Outer Traefik dashboard (private-secure: outer terminates TLS)
+      # Traefik dashboard
       - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_SUBDOMAIN}.${SERVICE_DOMAIN}`)"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=private-secure"

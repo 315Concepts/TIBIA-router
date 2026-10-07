@@ -22,7 +22,10 @@ One job: put the latest version of _Traefik_ in front of your containers, with L
 ## Quick Start
 
 1. Init the local environment by running `./init` and then editing `.env.local` with `SERVICE_DOMAIN` and `ACME_CERTIFICATE_EMAIL` values
-2. (Optional, fresh host) Install _curl_, _openssl_, and _Docker_ with `./scripts/install-debian.sh` or `./scripts/install-ubuntu.sh`, and review then run `./scripts/configure-ufw.sh`
+2. Optional, fresh host:
+    - Install _curl_, _openssl_, and _Docker_ with `./scripts/install-debian.sh` or `./scripts/install-ubuntu.sh`
+    - Review then run `./scripts/configure-ufw.sh`
+    - Add swap equal to your RAM with `./scripts/configure-swap.sh`
 3. Create the shared network: `./scripts/create-network.sh`
 4. Start _Traefik_ in **BRINGUP MODE**: `./up` which will bring _Traefik_ up with **ACME** Staging certificates and canary deployments active
 5. Confirm routing works: `./verify` - see [Verifying your setup](#verifying-your-setup)
@@ -126,7 +129,7 @@ Running `./up` starts two [`whoami`](https://github.com/traefik/whoami) canaries
 
 Run it on the _Traefik_ host. It prints `PASS`/`FAIL` for each check and exits non-zero if any fail:
 - _Traefik_ (and in bringup mode, both canaries) are running
-- `http://` redirects to HTTPS with a `308`
+- `http://` redirects to HTTPS with a `301`
 - The subdomain and path canaries answer, and the path prefix is stripped
 - The certificate issuer is staging in bringup mode, and not staging in production
 - The dashboard answers on the private port
@@ -159,6 +162,7 @@ Run these from the repository root. The Compose files are `docker-compose-traefi
 | `scripts/create-network.sh`    | Creates the shared `traefik_backend` _Docker_ network. Run once per host. |
 | `scripts/install-debian.sh`, `scripts/install-ubuntu.sh` | Installs _Docker Engine_ and the _Compose_ plugin from _Docker_'s apt repository. |
 | `scripts/configure-ufw.sh`     | Locks down ports that aren't in use by _Traefik_ - the rules are strict, review them before enabling. See [Firewall](#firewall).|
+| `scripts/configure-swap.sh`    | Adds a swap file sized at 100% of RAM (override with `SWAP_PERCENT`), persists it in `/etc/fstab` and sets `vm.swappiness=10`. Skips if swap is already active. |
 
 ## Security notes
 
